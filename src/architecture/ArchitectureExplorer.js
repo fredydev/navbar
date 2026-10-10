@@ -19,7 +19,11 @@ export const KIND_COLORS = {
   layer: "#4f9dff",
   component: "#b388ff",
   module: "#ffb547",
+  infra: "#ff5c8a",
+  resource: "#2dd4bf",
 };
+
+const DEPLOY_COLOR = "#e8ecf8";
 
 const NODE_W = 230;
 const NODE_H = 100;
@@ -34,6 +38,14 @@ const indexTree = (node, parent) => {
 };
 products.forEach((p) => indexTree(p, null));
 
+// Inverse de `deployedOn` : ressource infra -> nœuds applicatifs qu'elle héberge.
+const hostedBy = {};
+Object.values(index).forEach(({ node }) =>
+  (node.deployedOn || []).forEach((target) => {
+    (hostedBy[target] = hostedBy[target] || []).push(node);
+  })
+);
+
 const pathTo = (id) => {
   const path = [];
   for (let cur = index[id]; cur; cur = cur.parent && index[cur.parent.id]) {
@@ -44,7 +56,7 @@ const pathTo = (id) => {
 
 // Arbre horizontal : la profondeur donne x, les feuilles visibles s'empilent en y
 // et chaque parent ouvert est centré sur ses enfants.
-const layout = (expanded) => {
+const layout = (expanded, showDeploy) => {
   const nodes = [];
   const edges = [];
   let row = 0;
@@ -83,6 +95,32 @@ const layout = (expanded) => {
   };
 
   products.forEach((p) => place(p, 0, null));
+
+  // Liens "déployé sur" entre l'applicatif et l'infra, quand les deux bouts sont visibles.
+  if (showDeploy) {
+    const visible = new Set(nodes.map((n) => n.id));
+    nodes.forEach(({ data: { node } }) =>
+      (node.deployedOn || []).filter((t) => visible.has(t)).forEach((target) => {
+        edges.push({
+          id: `deploy:${node.id}->${target}`,
+          source: node.id,
+          sourceHandle: "deploy-out",
+          target,
+          targetHandle: "deploy-in",
+          type: "smoothstep",
+          pathOptions: { offset: 40, borderRadius: 18 },
+          animated: true,
+          className: "deploy-edge",
+          label: "déployé sur",
+          labelStyle: { fill: DEPLOY_COLOR, fontSize: 11 },
+          labelBgStyle: { fill: "#0b0f1d", fillOpacity: 0.85 },
+          labelBgPadding: [6, 3],
+          labelBgBorderRadius: 6,
+          style: { stroke: DEPLOY_COLOR, strokeWidth: 1.5, strokeDasharray: "2 6", opacity: 0.75 },
+        });
+      })
+    );
+  }
   return { nodes, edges };
 };
 
@@ -110,6 +148,7 @@ const ArchNode = ({ data, selected }) => {
         <span className="dot" />
         {node.kind}
         {node.archType ? ` · ${node.archType}` : ""}
+        {node.repo && <span className="repo">⎇ {node.repo}</span>}
       </div>
       <div className="arch-name">{node.name}</div>
       <div className="arch-meta">
@@ -123,6 +162,8 @@ const ArchNode = ({ data, selected }) => {
         )}
       </div>
       <Handle type="source" position={Position.Right} />
+      <Handle id="deploy-out" type="source" position={Position.Right} style={{ top: "70%" }} />
+      <Handle id="deploy-in" type="target" position={Position.Right} style={{ top: "30%" }} />
     </div>
   );
 };
@@ -190,6 +231,16 @@ const Shell = styled.section`
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--kind);
+    .repo {
+      margin-left: auto;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(232, 236, 248, 0.75);
+      text-transform: none;
+      letter-spacing: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     .dot {
       width: 7px;
       height: 7px;
@@ -238,6 +289,7 @@ const Shell = styled.section`
     }
     .actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
     }
     button {
@@ -251,6 +303,10 @@ const Shell = styled.section`
       font-size: 0.85rem;
       &:hover {
         background: rgba(255, 255, 255, 0.14);
+      }
+      &.on {
+        border-color: rgba(232, 236, 248, 0.6);
+        background: rgba(232, 236, 248, 0.16);
       }
     }
   }
@@ -280,8 +336,22 @@ const Shell = styled.section`
       font-size: 0.9rem;
       color: rgba(232, 236, 248, 0.8);
     }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 0.82rem;
+      margin-bottom: 6px;
+      span {
+        color: rgba(232, 236, 248, 0.55);
+        min-width: 80px;
+      }
+      code {
+        color: #fff;
+      }
+    }
     ul {
-      margin: 0;
+      margin: 8px 0 0;
       padding-left: 18px;
       font-size: 0.85rem;
     }
@@ -316,7 +386,8 @@ const Explorer = () => {
   const [focusId, setFocusId] = useState(null);
   const { fitView } = useReactFlow();
 
-  const { nodes, edges } = useMemo(() => layout(expanded), [expanded]);
+  const [showDeploy, setShowDeploy] = useState(true);
+  const { nodes, edges } = useMemo(() => layout(expanded, showDeploy), [expanded, showDeploy]);
   const flowNodes = useMemo(
     () => nodes.map((n) => ({ ...n, selected: n.id === selectedId })),
     [nodes, selectedId]
@@ -383,6 +454,13 @@ const Explorer = () => {
         <div className="actions">
           <button onClick={expandAll}>Tout déplier</button>
           <button onClick={reset}>Réinitialiser</button>
+          <button
+            className={showDeploy ? "on" : ""}
+            aria-pressed={showDeploy}
+            onClick={() => setShowDeploy((v) => !v)}
+          >
+            Liens infra
+          </button>
         </div>
       </Panel>
       {selected && (
@@ -398,6 +476,24 @@ const Explorer = () => {
             </div>
             <h3>{selected.name}</h3>
             <p>{selected.description}</p>
+            {selected.repo && (
+              <div className="row">
+                <span>Repo</span>
+                <code>{selected.repo}</code>
+              </div>
+            )}
+            {selected.deployedOn && (
+              <div className="row">
+                <span>Déployé sur</span>
+                {selected.deployedOn.map((id) => index[id].node.name).join(", ")}
+              </div>
+            )}
+            {hostedBy[selected.id] && (
+              <div className="row">
+                <span>Héberge</span>
+                {hostedBy[selected.id].map((n) => n.name).join(", ")}
+              </div>
+            )}
             {selected.children && (
               <ul>
                 {selected.children.map((c) => (

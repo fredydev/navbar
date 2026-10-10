@@ -36,3 +36,19 @@ test('reset collapses everything', () => {
   fireEvent.click(screen.getByText('Réinitialiser'));
   expect(queryNodeNamed('JWT')).toBeUndefined();
 });
+
+test('infra layer comes from its own repo and links to what it hosts', () => {
+  const { container } = render(<App />);
+  fireEvent.click(nodeNamed('CyberPath'));
+  expect(nodeNamed('Infra')).toBeInTheDocument();
+  expect(screen.getByText(/cyberpath-infra/)).toBeInTheDocument();
+
+  fireEvent.click(nodeNamed('Infra'));
+  fireEvent.click(nodeNamed('PostgreSQL (RDS)'));
+  expect(screen.getByText('Héberge')).toBeInTheDocument();
+
+  fireEvent.click(nodeNamed('Backend'));
+  expect(container.querySelector('[data-id="deploy:cp-api->cp-k8s"]')).not.toBeNull();
+  fireEvent.click(screen.getByText('Liens infra'));
+  expect(container.querySelector('[data-id="deploy:cp-api->cp-k8s"]')).toBeNull();
+});
