@@ -118,3 +118,31 @@ test('shows why an invalid file was rejected', async () => {
   expect(alert).toHaveTextContent('"name" manquant');
   expect(block('CyberPath')).toBeInTheDocument();
 });
+
+test('security view maps attack surface, flows and findings', () => {
+  const { container } = render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: /Sécurité/ }));
+
+  const panel = screen.getByRole('complementary', { name: 'Problèmes de sécurité' });
+  expect(within(panel).getByText('5 problèmes dans CyberPath')).toBeInTheDocument();
+  expect(screen.getByText('Internet', { selector: '.arch-name' })).toBeInTheDocument();
+  expect(container.querySelector('[data-id="__internet->cp-api-labs"]')).not.toBeNull();
+  expect(container.querySelector('[data-id="flow:cp-k8s-labs->cp-rds:0"]')).not.toBeNull();
+
+  fireEvent.click(within(panel).getByText('Flux de données sensibles non chiffré'));
+  expect(within(panel).getByText('Pods labs')).toBeInTheDocument();
+  expect(within(panel).getByText('· en clair', { selector: '.clear' })).toBeInTheDocument();
+
+  fireEvent.click(within(panel).getByText("Ouvrir dans l'exploration →"));
+  expect(focusName()).toBe('Pods labs');
+  expect(screen.getByText('⚠ Flux de données sensibles non chiffré')).toBeInTheDocument();
+});
+
+test('security view switches product', () => {
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: /Sécurité/ }));
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'Produit analysé' })).getByText('Portfolio'));
+  const panel = screen.getByRole('complementary', { name: 'Problèmes de sécurité' });
+  expect(within(panel).getByText('1 problème dans Portfolio')).toBeInTheDocument();
+  expect(block('Formspree')).toBeInTheDocument();
+});

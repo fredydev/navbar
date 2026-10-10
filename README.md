@@ -39,6 +39,31 @@ dans l'app, **Importer un JSON** (ou un glisser-déposer sur le canevas) affiche
 | `deployedOn` | non | Ids des ressources infra qui hébergent ce bloc |
 | `children` | non | Sous-blocs |
 
+### Sécurité
+
+Ces champs alimentent l'onglet **Sécurité** : une carte par zones (Internet & tiers → exposé → interne → données),
+les flux de données colorés selon le risque, et la liste des problèmes détectés.
+
+| Champ | Rôle |
+|---|---|
+| `exposure` | `public` (joignable depuis Internet), `internal` (réseau interne) ou `private` (aucun accès direct) |
+| `auth` | Authentification demandée : `none`, `JWT`, `mTLS`… |
+| `data` | Données stockées ou servies : `pii`, `credentials`, `payment`, `health`, `public` |
+| `encryptedAtRest` | `true` / `false` : données chiffrées sur disque |
+| `flows` | Flux sortants : `[{ "to": "id", "data": ["pii"], "protocol": "HTTPS", "encrypted": true }]` |
+
+Le `kind` `external` désigne un service tiers (Stripe, Google OAuth…).
+
+Problèmes détectés (`src/architecture/security.js`) :
+
+| Gravité | Règle |
+|---|---|
+| Critique | Bloc public, sans authentification, qui sert des données sensibles |
+| Élevée | Ressource de stockage de données sensibles exposée sur Internet |
+| Élevée | Données sensibles stockées sans chiffrement au repos |
+| Élevée | Flux de données sensibles non chiffré |
+| Moyenne | Données sensibles envoyées à un service tiers (à couvrir par un contrat RGPD) |
+
 Un fichier invalide est refusé avec la liste des erreurs (id manquant ou en double, `kind` inconnu, `deployedOn` vers un id qui n'existe pas…).
 La validation est dans `src/architecture/model.js`.
 

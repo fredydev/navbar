@@ -76,6 +76,19 @@
               "kind": "component",
               "description": "Appels HTTP vers le backend."
             }
+          ],
+          "exposure": "public",
+          "auth": "none",
+          "flows": [
+            {
+              "to": "cp-api",
+              "data": [
+                "credentials",
+                "pii"
+              ],
+              "protocol": "HTTPS",
+              "encrypted": true
+            }
           ]
         },
         {
@@ -104,13 +117,41 @@
                   "id": "cp-api-labs",
                   "name": "/labs",
                   "kind": "module",
-                  "description": "Lancement des labs."
+                  "description": "Lancement des labs.",
+                  "exposure": "public",
+                  "auth": "none",
+                  "data": [
+                    "pii"
+                  ]
                 },
                 {
                   "id": "cp-api-users",
                   "name": "/users",
                   "kind": "module",
                   "description": "Gestion des comptes."
+                }
+              ],
+              "exposure": "public",
+              "auth": "JWT",
+              "data": [
+                "pii"
+              ],
+              "flows": [
+                {
+                  "to": "cp-rds",
+                  "data": [
+                    "pii"
+                  ],
+                  "protocol": "PostgreSQL/TLS",
+                  "encrypted": true
+                },
+                {
+                  "to": "cp-stripe",
+                  "data": [
+                    "payment"
+                  ],
+                  "protocol": "HTTPS",
+                  "encrypted": true
                 }
               ]
             },
@@ -134,6 +175,29 @@
                   "name": "OAuth",
                   "kind": "module",
                   "description": "Connexion Google / GitHub."
+                }
+              ],
+              "exposure": "internal",
+              "auth": "mTLS",
+              "data": [
+                "credentials"
+              ],
+              "flows": [
+                {
+                  "to": "cp-google",
+                  "data": [
+                    "pii"
+                  ],
+                  "protocol": "OAuth 2.0",
+                  "encrypted": true
+                },
+                {
+                  "to": "cp-rds",
+                  "data": [
+                    "credentials"
+                  ],
+                  "protocol": "PostgreSQL/TLS",
+                  "encrypted": true
                 }
               ]
             },
@@ -211,7 +275,19 @@
                   "id": "cp-k8s-labs",
                   "name": "Pods labs",
                   "kind": "module",
-                  "description": "Environnements d'exercice éphémères."
+                  "description": "Environnements d'exercice éphémères.",
+                  "exposure": "public",
+                  "auth": "none",
+                  "flows": [
+                    {
+                      "to": "cp-rds",
+                      "data": [
+                        "pii"
+                      ],
+                      "protocol": "PostgreSQL",
+                      "encrypted": false
+                    }
+                  ]
                 }
               ]
             },
@@ -219,13 +295,21 @@
               "id": "cp-rds",
               "name": "PostgreSQL (RDS)",
               "kind": "resource",
-              "description": "Base managée, sauvegardes quotidiennes."
+              "description": "Base managée, sauvegardes quotidiennes.",
+              "exposure": "private",
+              "data": [
+                "pii",
+                "credentials"
+              ],
+              "encryptedAtRest": false
             },
             {
               "id": "cp-cdn",
               "name": "CDN + S3",
               "kind": "resource",
-              "description": "Hébergement du frontend (CloudFront + S3)."
+              "description": "Hébergement du frontend (CloudFront + S3).",
+              "exposure": "public",
+              "auth": "none"
             },
             {
               "id": "cp-cicd",
@@ -246,6 +330,26 @@
                   "description": "terraform apply + kubectl rollout."
                 }
               ]
+            }
+          ]
+        },
+        {
+          "id": "cyberpath-external",
+          "name": "Services externes",
+          "kind": "external",
+          "description": "Fournisseurs tiers appelés par CyberPath.",
+          "children": [
+            {
+              "id": "cp-stripe",
+              "name": "Stripe",
+              "kind": "external",
+              "description": "Paiement des abonnements."
+            },
+            {
+              "id": "cp-google",
+              "name": "Google OAuth",
+              "kind": "external",
+              "description": "Connexion avec un compte Google."
             }
           ]
         }
@@ -284,7 +388,19 @@
               "id": "pf-contact",
               "name": "Contact",
               "kind": "component",
-              "description": "Formulaire de contact."
+              "description": "Formulaire de contact.",
+              "exposure": "public",
+              "auth": "none",
+              "flows": [
+                {
+                  "to": "pf-formspree",
+                  "data": [
+                    "pii"
+                  ],
+                  "protocol": "HTTPS",
+                  "encrypted": true
+                }
+              ]
             }
           ]
         },
@@ -299,13 +415,29 @@
               "id": "pf-pages",
               "name": "GitHub Pages",
               "kind": "resource",
-              "description": "Sert le build statique."
+              "description": "Sert le build statique.",
+              "exposure": "public",
+              "auth": "none"
             },
             {
               "id": "pf-dns",
               "name": "DNS",
               "kind": "resource",
               "description": "Domaine personnalisé."
+            }
+          ]
+        },
+        {
+          "id": "portfolio-external",
+          "name": "Services externes",
+          "kind": "external",
+          "description": "Fournisseurs tiers.",
+          "children": [
+            {
+              "id": "pf-formspree",
+              "name": "Formspree",
+              "kind": "external",
+              "description": "Reçoit les messages du formulaire de contact."
             }
           ]
         }

@@ -14,9 +14,20 @@
 //   "repo": "nom-du-repo",                    optionnel
 //   "deployedOn": ["id-d-une-ressource"],     optionnel
 //   "children": [ Nœud, ... ]                 optionnel
+//
+//   Sécurité (tout est optionnel) :
+//   "exposure": "public" | "internal" | "private",   joignable depuis Internet, le réseau interne, ou rien
+//   "auth": "none" | "JWT" | "mTLS" | …,              authentification demandée pour y accéder
+//   "data": ["pii", "credentials", …],                données stockées ou servies par ce bloc
+//   "encryptedAtRest": true | false,                  données chiffrées sur disque
+//   "flows": [{ "to": "id", "data": [...], "protocol": "HTTPS", "encrypted": true }]
 // }
 
-export const KINDS = ["app", "layer", "infra", "component", "resource", "module"];
+export const KINDS = ["app", "layer", "infra", "component", "resource", "module", "external"];
+
+export const EXPOSURES = ["public", "internal", "private"];
+
+export const DATA_TYPES = ["pii", "credentials", "payment", "health", "public"];
 
 export const ROOT_ID = "__root";
 
@@ -65,7 +76,43 @@ export const validateArchitecture = (data) => {
       if (!Array.isArray(node.deployedOn) || !node.deployedOn.every(isText)) {
         add(`${label} : "deployedOn" doit être une liste d'ids.`);
       } else {
-        node.deployedOn.forEach((id) => references.push({ id, label }));
+        node.deployedOn.forEach((id) => references.push({ id, label, field: '"deployedOn"' }));
+      }
+    }
+
+    if (node.exposure !== undefined && !EXPOSURES.includes(node.exposure)) {
+      add(`${label} : "exposure" doit être l'un de ${EXPOSURES.join(", ")}.`);
+    }
+    if (!isOptionalText(node.auth)) add(`${label} : "auth" doit être un texte.`);
+    if (node.encryptedAtRest !== undefined && typeof node.encryptedAtRest !== "boolean") {
+      add(`${label} : "encryptedAtRest" doit valoir true ou false.`);
+    }
+    const checkData = (data, where) => {
+      if (data === undefined) return;
+      if (!Array.isArray(data)) add(`${label} : ${where} doit être une liste.`);
+      else {
+        data
+          .filter((d) => !DATA_TYPES.includes(d))
+          .forEach((d) => add(`${label} : type de donnée inconnu "${d}" dans ${where} (attendu : ${DATA_TYPES.join(", ")}).`));
+      }
+    };
+    checkData(node.data, '"data"');
+    if (node.flows !== undefined) {
+      if (!Array.isArray(node.flows)) add(`${label} : "flows" doit être une liste.`);
+      else {
+        node.flows.forEach((flow, i) => {
+          const where = `"flows[${i}]"`;
+          if (!flow || typeof flow !== "object" || !isText(flow.to)) {
+            add(`${label} : ${where} doit avoir un "to".`);
+            return;
+          }
+          references.push({ id: flow.to, label, field: where });
+          checkData(flow.data, `${where}.data`);
+          if (flow.encrypted !== undefined && typeof flow.encrypted !== "boolean") {
+            add(`${label} : ${where}.encrypted doit valoir true ou false.`);
+          }
+          if (!isOptionalText(flow.protocol)) add(`${label} : ${where}.protocol doit être un texte.`);
+        });
       }
     }
 
@@ -77,8 +124,8 @@ export const validateArchitecture = (data) => {
 
   data.products.forEach((product, i) => visit(product, `products[${i}]`));
 
-  references.forEach(({ id, label }) => {
-    if (!seen.has(id)) add(`${label} : "deployedOn" cite l'id "${id}" qui n'existe pas.`);
+  references.forEach(({ id, label, field }) => {
+    if (!seen.has(id)) add(`${label} : ${field} cite l'id "${id}" qui n'existe pas.`);
   });
 
   return errors;
@@ -109,6 +156,14 @@ export const buildModel = (data) => {
     })
   );
 
+  // Flux entrants : nœud -> [{ from, flow }].
+  const flowsIn = {};
+  Object.values(index).forEach(({ node }) =>
+    (node.flows || []).forEach((flow) => {
+      (flowsIn[flow.to] = flowsIn[flow.to] || []).push({ from: node, flow });
+    })
+  );
+
   const pathTo = (id) => {
     const path = [];
     for (let cur = index[id]; cur; cur = cur.parent && index[cur.parent.id]) {
@@ -117,7 +172,7 @@ export const buildModel = (data) => {
     return path;
   };
 
-  return { root, products: data.products, index, hostedBy, pathTo };
+  return { root, products: data.products, index, hostedBy, flowsIn, pathTo };
 };
 
 // Lit un texte JSON : renvoie { model } si tout va bien, sinon { errors }.

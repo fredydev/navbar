@@ -6,40 +6,33 @@ import {
   Background,
   Controls,
   MiniMap,
-  Handle,
-  Position,
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import sample from "./architecture.json";
 import { buildModel, parseArchitecture, ROOT_ID } from "./model";
-
-export const KIND_COLORS = {
-  home: "#e8ecf8",
-  app: "#3ddc84",
-  layer: "#4f9dff",
-  infra: "#ff5c8a",
-  component: "#b388ff",
-  resource: "#2dd4bf",
-  module: "#ffb547",
-};
-
-const KIND_LABELS = {
-  home: "Accueil",
-  app: "Application",
-  layer: "Couche",
-  infra: "Infra",
-  component: "Composant",
-  resource: "Ressource",
-  module: "Module",
-};
+import {
+  KIND_COLORS,
+  NODE_W,
+  NODE_H,
+  GAP_X,
+  GAP_Y,
+  plural,
+  kindVars,
+  Handles,
+  KindRow,
+} from "./shared";
+import { analyzeSecurity, findingsByNode, SEVERITY_COLORS } from "./security";
+import {
+  securityLayout,
+  securityNodeTypes,
+  FindingsPanel,
+  SecurityBadges,
+  SeverityPill,
+} from "./SecurityView";
 
 const DEPLOY_COLOR = "#e8ecf8";
 
-const NODE_W = 230;
-const NODE_H = 120;
-const GAP_X = 120;
-const GAP_Y = 22;
 const FOCUS_W = 320;
 const FOCUS_H = 196;
 
@@ -80,8 +73,6 @@ const readFile = (file) =>
     reader.readAsText(file);
   });
 
-const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
-
 const treeEdge = (source, target) => {
   const color = KIND_COLORS[target.kind];
   return {
@@ -96,7 +87,7 @@ const treeEdge = (source, target) => {
 
 // Exploration : le parent à gauche, le nœud courant au centre, ses enfants à droite.
 // Les ids restent ceux des nœuds réels : un enfant cliqué glisse jusqu'au centre.
-const exploreLayout = (model, currentId, onGo) => {
+const exploreLayout = (model, byNode, currentId, onGo) => {
   const current = model.index[currentId].node;
   const parent = model.index[currentId].parent;
   const children = current.children || [];
@@ -120,8 +111,7 @@ const exploreLayout = (model, currentId, onGo) => {
     type: "focus",
     position: { x: 0, y: -FOCUS_H / 2 },
     width: FOCUS_W,
-    height: FOCUS_H,
-    data: { node: current, model, onGo },
+    data: { node: current, model, onGo, findings: byNode[current.id] },
   });
 
   children.forEach((child, i) => {
@@ -134,7 +124,7 @@ const exploreLayout = (model, currentId, onGo) => {
       },
       width: NODE_W,
       height: NODE_H,
-      data: { node: child, model },
+      data: { node: child, model, findings: byNode[child.id] },
     });
     edges.push(treeEdge(current, child));
   });
@@ -143,7 +133,7 @@ const exploreLayout = (model, currentId, onGo) => {
 };
 
 // Vue d'ensemble : tout l'arbre déplié, de gauche à droite.
-const overviewLayout = (model, showDeploy) => {
+const overviewLayout = (model, byNode, showDeploy) => {
   const nodes = [];
   const edges = [];
   let row = 0;
@@ -164,7 +154,7 @@ const overviewLayout = (model, showDeploy) => {
       position: { x: depth * (NODE_W + GAP_X), y },
       width: NODE_W,
       height: NODE_H,
-      data: { node, model },
+      data: { node, model, findings: byNode[node.id] },
     });
     if (parent) edges.push(treeEdge(parent, node));
     return y;
@@ -206,30 +196,8 @@ const glow = keyframes`
   50%      { box-shadow: 0 0 40px var(--glow), inset 0 0 0 1px var(--kind); }
 `;
 
-const kindVars = (node) => {
-  const color = KIND_COLORS[node.kind];
-  return { "--kind": color, "--glow": `${color}66` };
-};
 
-const Handles = () => (
-  <>
-    <Handle type="target" position={Position.Left} />
-    <Handle type="source" position={Position.Right} />
-    <Handle id="deploy-out" type="source" position={Position.Right} style={{ top: "70%" }} />
-    <Handle id="deploy-in" type="target" position={Position.Right} style={{ top: "30%" }} />
-  </>
-);
-
-const KindRow = ({ node }) => (
-  <div className="arch-kind">
-    <span className="dot" />
-    {KIND_LABELS[node.kind]}
-    {node.archType ? ` · ${node.archType}` : ""}
-    {node.repo && <span className="repo">⎇ {node.repo}</span>}
-  </div>
-);
-
-const CardNode = ({ data: { node, model } }) => {
+const CardNode = ({ data: { node, model, findings } }) => {
   const count = node.children ? node.children.length : 0;
   return (
     <div className="arch-node card" style={kindVars(node)}>
@@ -241,7 +209,10 @@ const CardNode = ({ data: { node, model } }) => {
       )}
       <div className="arch-meta">
         <span>{count > 0 ? plural(count, "sous-composant") : "Voir le détail"}</span>
-        <span className="chevron">→</span>
+        <span className="meta-right">
+          <SeverityPill findings={findings} />
+          <span className="chevron">→</span>
+        </span>
       </div>
     </div>
   );
@@ -279,9 +250,11 @@ const Chips = ({ label, ids, model, onGo }) => (
   </div>
 );
 
-const FocusNode = ({ data: { node, model, onGo } }) => {
+const FocusNode = ({ data: { node, model, onGo, findings } }) => {
   const count = node.children ? node.children.length : 0;
   const hosts = model.hostedBy[node.id];
+  const sendsTo = (node.flows || []).map((f) => f.to);
+  const receivesFrom = (model.flowsIn[node.id] || []).map(({ from }) => from.id);
   return (
     <div className="arch-node focus" style={kindVars(node)}>
       <Handles />
@@ -290,6 +263,18 @@ const FocusNode = ({ data: { node, model, onGo } }) => {
       <p className="description">{node.description}</p>
       {node.deployedOn && <Chips label="Déployé sur" ids={node.deployedOn} model={model} onGo={onGo} />}
       {hosts && <Chips label="Héberge" ids={hosts.map((n) => n.id)} model={model} onGo={onGo} />}
+      <SecurityBadges node={node} />
+      {sendsTo.length > 0 && <Chips label="Envoie à" ids={sendsTo} model={model} onGo={onGo} />}
+      {receivesFrom.length > 0 && <Chips label="Reçoit de" ids={receivesFrom} model={model} onGo={onGo} />}
+      {findings && (
+        <ul className="focus-findings">
+          {findings.map((f) => (
+            <li key={f.id} style={{ "--sev": SEVERITY_COLORS[f.severity] }}>
+              ⚠ {f.title}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="arch-meta">
         {count > 0 ? `${plural(count, "sous-composant")} →` : "Aucun sous-composant"}
       </div>
@@ -297,7 +282,7 @@ const FocusNode = ({ data: { node, model, onGo } }) => {
   );
 };
 
-const nodeTypes = { card: CardNode, ghost: GhostNode, focus: FocusNode };
+const nodeTypes = { card: CardNode, ghost: GhostNode, focus: FocusNode, ...securityNodeTypes };
 
 const Shell = styled.section`
   position: relative;
@@ -407,10 +392,19 @@ const Shell = styled.section`
       padding: 2px 4px;
     }
   }
+  .stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    @media screen and (max-width: 900px) {
+      flex-direction: column;
+    }
+  }
   .flow {
     position: relative;
     flex: 1;
     min-height: 0;
+    min-width: 0;
   }
   .drop-hint {
     position: absolute;
@@ -525,7 +519,7 @@ const Shell = styled.section`
   }
   .focus {
     width: ${FOCUS_W}px;
-    height: ${FOCUS_H}px;
+    min-height: ${FOCUS_H}px;
     padding: 18px 20px;
     cursor: default;
     border-color: var(--kind);
@@ -627,6 +621,250 @@ const Shell = styled.section`
     }
   }
 
+  .meta-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .severity-pill {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #0b0f1d;
+    background: var(--sev);
+    box-shadow: 0 0 10px var(--sev);
+  }
+  .sec-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    .badge {
+      font-size: 0.68rem;
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.05);
+      color: rgba(232, 236, 248, 0.85);
+      white-space: nowrap;
+    }
+    .exposure-public {
+      border-color: rgba(255, 77, 109, 0.6);
+      color: #ff8fa3;
+    }
+    .exposure-private {
+      border-color: rgba(45, 212, 191, 0.5);
+      color: #5eead4;
+    }
+    .auth-none {
+      border-color: rgba(255, 159, 67, 0.6);
+      color: #ffbe7d;
+    }
+    .data-sensitive {
+      border-color: rgba(255, 209, 102, 0.5);
+      color: #ffd166;
+    }
+  }
+  .focus-findings {
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.78rem;
+    li {
+      color: var(--sev);
+    }
+  }
+  .sec {
+    width: ${NODE_W}px;
+    height: ${NODE_H}px;
+    &.has-findings {
+      border-color: var(--sev);
+      box-shadow: 0 0 16px color-mix(in srgb, var(--sev) 35%, transparent);
+    }
+    &.selected {
+      outline: 2px solid #fff;
+      outline-offset: 3px;
+    }
+    &:hover {
+      transform: translateY(-2px);
+    }
+  }
+  .internet {
+    width: ${NODE_W}px;
+    height: ${NODE_H}px;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    border-color: var(--kind);
+    cursor: default;
+    background: radial-gradient(circle, rgba(255, 77, 109, 0.25), rgba(255, 77, 109, 0.04));
+    .internet-icon {
+      font-size: 1.6rem;
+    }
+    .arch-meta {
+      margin-top: 0;
+    }
+  }
+  .zone {
+    box-sizing: border-box;
+    border-radius: 18px;
+    border: 1px dashed rgba(232, 236, 248, 0.14);
+    padding: 12px 16px;
+    pointer-events: none;
+    .zone-title {
+      font-weight: 700;
+      font-size: 0.95rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .zone-hint {
+      font-size: 0.75rem;
+      color: rgba(232, 236, 248, 0.5);
+    }
+  }
+  .zone-internet {
+    background: rgba(255, 77, 109, 0.06);
+    .zone-title {
+      color: #ff8fa3;
+    }
+  }
+  .zone-public {
+    background: rgba(255, 159, 67, 0.05);
+    .zone-title {
+      color: #ffbe7d;
+    }
+  }
+  .zone-internal {
+    background: rgba(79, 157, 255, 0.05);
+    .zone-title {
+      color: #8ab8ff;
+    }
+  }
+  .zone-private {
+    background: rgba(45, 212, 191, 0.05);
+    .zone-title {
+      color: #5eead4;
+    }
+  }
+  .react-flow__node-zone {
+    cursor: default;
+  }
+  .tab-count {
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: #ff4d6d;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+  .crumbs.products {
+    gap: 6px;
+    button.on {
+      color: #0b0f1d;
+      background: rgba(232, 236, 248, 0.9);
+      font-weight: 700;
+    }
+  }
+  .findings {
+    flex: 0 0 320px;
+    margin: 0 12px 12px 0;
+    overflow-y: auto;
+    @media screen and (max-width: 900px) {
+      flex: 0 0 auto;
+      max-height: 38%;
+      margin: 0 12px 12px;
+    }
+    box-sizing: border-box;
+    padding: 14px;
+    border-radius: 14px;
+    background: rgba(11, 15, 29, 0.85);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 0.85rem;
+    h3 {
+      margin: 4px 0 8px;
+      font-size: 1rem;
+      color: var(--kind, #fff);
+    }
+    .findings-head {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .counts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .count {
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--sev);
+      color: var(--sev);
+      font-size: 0.75rem;
+    }
+    .link {
+      align-self: flex-start;
+      cursor: pointer;
+      background: none;
+      border: 0;
+      padding: 0;
+      font: inherit;
+      color: #8ab8ff;
+    }
+    .flow-list {
+      margin: 0;
+      padding-left: 4px;
+      list-style: none;
+      font-size: 0.8rem;
+      color: rgba(232, 236, 248, 0.75);
+      .clear {
+        color: #ff4d6d;
+      }
+    }
+    .finding-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .finding {
+      width: 100%;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-left: 3px solid var(--sev);
+      background: rgba(255, 255, 255, 0.04);
+      color: #e8ecf8;
+      font: inherit;
+      &:hover {
+        background: rgba(255, 255, 255, 0.09);
+      }
+      .sev {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--sev);
+      }
+      .detail {
+        font-size: 0.8rem;
+        color: rgba(232, 236, 248, 0.7);
+      }
+    }
+    .none {
+      color: rgba(232, 236, 248, 0.6);
+    }
+  }
+
   .react-flow__controls {
     box-shadow: none;
     button {
@@ -654,6 +892,8 @@ const Explorer = () => {
   const [mode, setMode] = useState("explore");
   const [currentId, setCurrentId] = useState(ROOT_ID);
   const [showDeploy, setShowDeploy] = useState(true);
+  const [secProductId, setSecProductId] = useState(null);
+  const [secSelectedId, setSecSelectedId] = useState(null);
   const [{ model, source }, setLoaded] = useState(() => loadSaved() || { model: SAMPLE_MODEL, source: null });
   const [errors, setErrors] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -662,6 +902,8 @@ const Explorer = () => {
 
   const show = (loaded) => {
     setLoaded(loaded);
+    setSecProductId(null);
+    setSecSelectedId(null);
     setErrors(null);
     setMode("explore");
     setCurrentId(ROOT_ID);
@@ -699,16 +941,25 @@ const Explorer = () => {
     setCurrentId(id);
   }, []);
 
-  const { nodes, edges } = useMemo(
-    () => (mode === "explore" ? exploreLayout(model, currentId, go) : overviewLayout(model, showDeploy)),
-    [model, mode, currentId, go, showDeploy]
+  const findings = useMemo(() => analyzeSecurity(model), [model]);
+  const byNode = useMemo(() => findingsByNode(findings), [findings]);
+  const productId = secProductId || model.products[0].id;
+  const productFindings = useMemo(
+    () => findings.filter((f) => model.pathTo(f.nodeId)[1].id === productId),
+    [findings, model, productId]
   );
+
+  const { nodes, edges } = useMemo(() => {
+    if (mode === "explore") return exploreLayout(model, byNode, currentId, go);
+    if (mode === "security") return securityLayout(model, productId, byNode, secSelectedId);
+    return overviewLayout(model, byNode, showDeploy);
+  }, [model, byNode, mode, currentId, go, showDeploy, productId, secSelectedId]);
 
   // La caméra suit chaque changement de vue.
   useEffect(() => {
     const timer = setTimeout(() => fitView({ duration: 700, padding: 0.15, maxZoom: 1 }), 60);
     return () => clearTimeout(timer);
-  }, [model, mode, currentId, fitView]);
+  }, [model, mode, currentId, productId, fitView]);
 
   // Échap remonte d'un niveau.
   useEffect(() => {
@@ -722,9 +973,11 @@ const Explorer = () => {
 
   const onNodeClick = useCallback(
     (_, flowNode) => {
-      if (flowNode.type !== "focus") go(flowNode.id);
+      if (mode === "security") {
+        if (flowNode.type === "sec") setSecSelectedId(flowNode.id);
+      } else if (flowNode.type !== "focus") go(flowNode.id);
     },
-    [go]
+    [go, mode]
   );
 
   const path = model.pathTo(currentId);
@@ -738,6 +991,8 @@ const Explorer = () => {
           <p className="hint">
             {mode === "explore"
               ? "Clique sur un bloc à droite pour entrer dedans, sur celui de gauche pour remonter."
+              : mode === "security"
+              ? "Surfaces d'attaque et flux de données, de l'extérieur vers tes données."
               : "Clique sur n'importe quel bloc pour l'explorer."}
           </p>
         </div>
@@ -748,6 +1003,10 @@ const Explorer = () => {
             </button>
             <button className={mode === "overview" ? "on" : ""} onClick={() => setMode("overview")}>
               Vue d'ensemble
+            </button>
+            <button className={mode === "security" ? "on" : ""} onClick={() => setMode("security")}>
+              Sécurité
+              {findings.length > 0 && <span className="tab-count">{findings.length}</span>}
             </button>
           </div>
           {mode === "overview" && (
@@ -816,6 +1075,23 @@ const Explorer = () => {
           ))}
         </nav>
       )}
+      {mode === "security" && (
+        <nav className="crumbs products" aria-label="Produit analysé">
+          {model.products.map((p) => (
+            <button
+              key={p.id}
+              className={p.id === productId ? "on" : ""}
+              onClick={() => {
+                setSecProductId(p.id);
+                setSecSelectedId(null);
+              }}
+            >
+              {p.name}
+            </button>
+          ))}
+        </nav>
+      )}
+      <div className="stage">
       <div
         className="flow"
         onDragOver={(e) => {
@@ -850,6 +1126,17 @@ const Explorer = () => {
             />
           )}
         </ReactFlow>
+      </div>
+      {mode === "security" && (
+        <FindingsPanel
+          findings={productFindings}
+          productName={model.index[productId].node.name}
+          model={model}
+          selectedId={secSelectedId}
+          onSelect={setSecSelectedId}
+          onExplore={go}
+        />
+      )}
       </div>
     </>
   );
