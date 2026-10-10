@@ -6,7 +6,6 @@ import {
   Background,
   Controls,
   MiniMap,
-  Panel,
   Handle,
   Position,
   useReactFlow,
@@ -15,20 +14,42 @@ import "@xyflow/react/dist/style.css";
 import products from "./data";
 
 export const KIND_COLORS = {
+  home: "#e8ecf8",
   app: "#3ddc84",
   layer: "#4f9dff",
-  component: "#b388ff",
-  module: "#ffb547",
   infra: "#ff5c8a",
+  component: "#b388ff",
   resource: "#2dd4bf",
+  module: "#ffb547",
+};
+
+const KIND_LABELS = {
+  home: "Accueil",
+  app: "Application",
+  layer: "Couche",
+  infra: "Infra",
+  component: "Composant",
+  resource: "Ressource",
+  module: "Module",
 };
 
 const DEPLOY_COLOR = "#e8ecf8";
 
 const NODE_W = 230;
-const NODE_H = 100;
+const NODE_H = 108;
 const GAP_X = 120;
-const GAP_Y = 26;
+const GAP_Y = 22;
+const FOCUS_W = 320;
+const FOCUS_H = 196;
+
+// Racine virtuelle : la première vue liste les produits.
+const ROOT = {
+  id: "__root",
+  name: "Mes produits",
+  kind: "home",
+  description: "Choisis un produit pour explorer son architecture.",
+  children: products,
+};
 
 // Index id -> { node, parent } pour retrouver le chemin d'un nœud.
 const index = {};
@@ -36,7 +57,7 @@ const indexTree = (node, parent) => {
   index[node.id] = { node, parent };
   (node.children || []).forEach((child) => indexTree(child, node));
 };
-products.forEach((p) => indexTree(p, null));
+indexTree(ROOT, null);
 
 // Inverse de `deployedOn` : ressource infra -> nœuds applicatifs qu'elle héberge.
 const hostedBy = {};
@@ -54,18 +75,78 @@ const pathTo = (id) => {
   return path;
 };
 
-// Arbre horizontal : la profondeur donne x, les feuilles visibles s'empilent en y
-// et chaque parent ouvert est centré sur ses enfants.
-const layout = (expanded, showDeploy) => {
+const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
+
+const treeEdge = (source, target) => {
+  const color = KIND_COLORS[target.kind];
+  return {
+    id: `${source.id}->${target.id}`,
+    source: source.id,
+    target: target.id,
+    type: "smoothstep",
+    animated: true,
+    style: { stroke: color, strokeWidth: 2, filter: `drop-shadow(0 0 4px ${color})` },
+  };
+};
+
+// Exploration : le parent à gauche, le nœud courant au centre, ses enfants à droite.
+// Les ids restent ceux des nœuds réels : un enfant cliqué glisse jusqu'au centre.
+const exploreLayout = (currentId, onGo) => {
+  const current = index[currentId].node;
+  const parent = index[currentId].parent;
+  const children = current.children || [];
+  const nodes = [];
+  const edges = [];
+
+  if (parent) {
+    nodes.push({
+      id: parent.id,
+      type: "ghost",
+      position: { x: -(NODE_W + GAP_X), y: -NODE_H / 2 },
+      width: NODE_W,
+      height: NODE_H,
+      data: { node: parent },
+    });
+    edges.push({ ...treeEdge(parent, current), animated: false, style: { stroke: "rgba(232,236,248,0.25)", strokeWidth: 1.5 } });
+  }
+
+  nodes.push({
+    id: current.id,
+    type: "focus",
+    position: { x: 0, y: -FOCUS_H / 2 },
+    width: FOCUS_W,
+    height: FOCUS_H,
+    data: { node: current, onGo },
+  });
+
+  children.forEach((child, i) => {
+    nodes.push({
+      id: child.id,
+      type: "card",
+      position: {
+        x: FOCUS_W + GAP_X,
+        y: (i - (children.length - 1) / 2) * (NODE_H + GAP_Y) - NODE_H / 2,
+      },
+      width: NODE_W,
+      height: NODE_H,
+      data: { node: child },
+    });
+    edges.push(treeEdge(current, child));
+  });
+
+  return { nodes, edges };
+};
+
+// Vue d'ensemble : tout l'arbre déplié, de gauche à droite.
+const overviewLayout = (showDeploy) => {
   const nodes = [];
   const edges = [];
   let row = 0;
 
   const place = (node, depth, parent) => {
     const children = node.children || [];
-    const open = expanded.has(node.id) && children.length > 0;
     let y;
-    if (open) {
+    if (children.length) {
       const ys = children.map((child) => place(child, depth + 1, node));
       y = (ys[0] + ys[ys.length - 1]) / 2;
     } else {
@@ -74,33 +155,20 @@ const layout = (expanded, showDeploy) => {
     }
     nodes.push({
       id: node.id,
-      type: "arch",
+      type: "card",
       position: { x: depth * (NODE_W + GAP_X), y },
       width: NODE_W,
       height: NODE_H,
-      data: { node, open },
+      data: { node },
     });
-    if (parent) {
-      const color = KIND_COLORS[node.kind];
-      edges.push({
-        id: `${parent.id}->${node.id}`,
-        source: parent.id,
-        target: node.id,
-        type: "smoothstep",
-        animated: true,
-        style: { stroke: color, strokeWidth: 2, filter: `drop-shadow(0 0 4px ${color})` },
-      });
-    }
+    if (parent) edges.push(treeEdge(parent, node));
     return y;
   };
-
   products.forEach((p) => place(p, 0, null));
 
-  // Liens "déployé sur" entre l'applicatif et l'infra, quand les deux bouts sont visibles.
   if (showDeploy) {
-    const visible = new Set(nodes.map((n) => n.id));
     nodes.forEach(({ data: { node } }) =>
-      (node.deployedOn || []).filter((t) => visible.has(t)).forEach((target) => {
+      (node.deployedOn || []).forEach((target) => {
         edges.push({
           id: `deploy:${node.id}->${target}`,
           source: node.id,
@@ -110,7 +178,6 @@ const layout = (expanded, showDeploy) => {
           type: "smoothstep",
           pathOptions: { offset: 40, borderRadius: 18 },
           animated: true,
-          className: "deploy-edge",
           label: "déployé sur",
           labelStyle: { fill: DEPLOY_COLOR, fontSize: 11 },
           labelBgStyle: { fill: "#0b0f1d", fillOpacity: 0.85 },
@@ -131,47 +198,106 @@ const pop = keyframes`
 
 const glow = keyframes`
   0%, 100% { box-shadow: 0 0 18px var(--glow), inset 0 0 0 1px var(--kind); }
-  50%      { box-shadow: 0 0 34px var(--glow), inset 0 0 0 1px var(--kind); }
+  50%      { box-shadow: 0 0 40px var(--glow), inset 0 0 0 1px var(--kind); }
 `;
 
-const ArchNode = ({ data, selected }) => {
-  const { node, open } = data;
-  const count = node.children ? node.children.length : 0;
+const kindVars = (node) => {
   const color = KIND_COLORS[node.kind];
+  return { "--kind": color, "--glow": `${color}66` };
+};
+
+const Handles = () => (
+  <>
+    <Handle type="target" position={Position.Left} />
+    <Handle type="source" position={Position.Right} />
+    <Handle id="deploy-out" type="source" position={Position.Right} style={{ top: "70%" }} />
+    <Handle id="deploy-in" type="target" position={Position.Right} style={{ top: "30%" }} />
+  </>
+);
+
+const KindRow = ({ node }) => (
+  <div className="arch-kind">
+    <span className="dot" />
+    {KIND_LABELS[node.kind]}
+    {node.archType ? ` · ${node.archType}` : ""}
+    {node.repo && <span className="repo">⎇ {node.repo}</span>}
+  </div>
+);
+
+const CardNode = ({ data: { node } }) => {
+  const count = node.children ? node.children.length : 0;
   return (
-    <div
-      className={`arch-node${selected ? " selected" : ""}${open ? " open" : ""}`}
-      style={{ "--kind": color, "--glow": `${color}66` }}
-    >
-      <Handle type="target" position={Position.Left} />
-      <div className="arch-kind">
-        <span className="dot" />
-        {node.kind}
-        {node.archType ? ` · ${node.archType}` : ""}
-        {node.repo && <span className="repo">⎇ {node.repo}</span>}
-      </div>
+    <div className="arch-node card" style={kindVars(node)}>
+      <Handles />
+      <KindRow node={node} />
       <div className="arch-name">{node.name}</div>
+      {node.deployedOn && (
+        <div className="deploy-hint">☁ {node.deployedOn.map((id) => index[id].node.name).join(", ")}</div>
+      )}
       <div className="arch-meta">
-        {count > 0 ? (
-          <>
-            <span>{count} sous-composant{count > 1 ? "s" : ""}</span>
-            <span className="chevron">{open ? "−" : "+"}</span>
-          </>
-        ) : (
-          <span>Feuille</span>
-        )}
+        <span>{count > 0 ? plural(count, "sous-composant") : "Voir le détail"}</span>
+        <span className="chevron">→</span>
       </div>
-      <Handle type="source" position={Position.Right} />
-      <Handle id="deploy-out" type="source" position={Position.Right} style={{ top: "70%" }} />
-      <Handle id="deploy-in" type="target" position={Position.Right} style={{ top: "30%" }} />
     </div>
   );
 };
 
-const nodeTypes = { arch: ArchNode };
+const GhostNode = ({ data: { node } }) => (
+  <div className="arch-node ghost" style={kindVars(node)}>
+    <Handles />
+    <span className="up">← Remonter</span>
+    <div className="ghost-name">{node.name}</div>
+  </div>
+);
+
+const Chips = ({ label, ids, onGo }) => (
+  <div className="row">
+    <span className="row-label">{label}</span>
+    <div className="chips">
+      {ids.map((id) => {
+        const target = index[id].node;
+        return (
+          <button
+            key={id}
+            className="chip nodrag"
+            style={kindVars(target)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onGo(id);
+            }}
+          >
+            {target.name}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+const FocusNode = ({ data: { node, onGo } }) => {
+  const count = node.children ? node.children.length : 0;
+  const hosts = hostedBy[node.id];
+  return (
+    <div className="arch-node focus" style={kindVars(node)}>
+      <Handles />
+      <KindRow node={node} />
+      <div className="arch-name">{node.name}</div>
+      <p className="description">{node.description}</p>
+      {node.deployedOn && <Chips label="Déployé sur" ids={node.deployedOn} onGo={onGo} />}
+      {hosts && <Chips label="Héberge" ids={hosts.map((n) => n.id)} onGo={onGo} />}
+      <div className="arch-meta">
+        {count > 0 ? `${plural(count, "sous-composant")} →` : "Aucun sous-composant"}
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { card: CardNode, ghost: GhostNode, focus: FocusNode };
 
 const Shell = styled.section`
   position: relative;
+  display: flex;
+  flex-direction: column;
   height: calc(100vh - 90px);
   min-height: 560px;
   margin: 20px auto;
@@ -188,8 +314,101 @@ const Shell = styled.section`
     border-radius: 14px;
   }
 
+  .header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 20px 10px;
+    h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      background: linear-gradient(90deg, #3ddc84, #4f9dff, #b388ff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hint {
+      margin: 4px 0 0;
+      color: rgba(232, 236, 248, 0.65);
+      font-size: 0.9rem;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  }
+  .segmented {
+    display: inline-flex;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    button {
+      border: 0;
+      background: transparent;
+    }
+    button.on {
+      background: rgba(232, 236, 248, 0.9);
+      color: #0b0f1d;
+    }
+  }
+  .header button {
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e8ecf8;
+    border-radius: 999px;
+    padding: 6px 14px;
+    font: inherit;
+    font-size: 0.85rem;
+    &:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+    &.toggle.on {
+      border-color: rgba(232, 236, 248, 0.6);
+      background: rgba(232, 236, 248, 0.16);
+    }
+  }
+  .crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 0 20px 6px;
+    font-size: 0.9rem;
+    min-height: 26px;
+    button {
+      background: none;
+      border: 0;
+      padding: 2px 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: rgba(232, 236, 248, 0.7);
+      font: inherit;
+      &:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+    }
+    .sep {
+      color: rgba(232, 236, 248, 0.35);
+    }
+    .current {
+      color: var(--kind);
+      font-weight: 700;
+      padding: 2px 4px;
+    }
+  }
+  .flow {
+    flex: 1;
+    min-height: 0;
+  }
+
   .react-flow__node {
-    transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .react-flow__handle {
     opacity: 0;
@@ -197,30 +416,64 @@ const Shell = styled.section`
   }
 
   .arch-node {
-    width: ${NODE_W}px;
-    height: ${NODE_H}px;
     box-sizing: border-box;
     padding: 14px 16px;
     border-radius: 14px;
     background: linear-gradient(145deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.02));
     backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: 0 0 0 transparent;
     display: flex;
     flex-direction: column;
     gap: 4px;
     cursor: pointer;
     animation: ${pop} 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
-    transition: border-color 0.2s, transform 0.2s;
+    transition: border-color 0.2s, transform 0.2s, opacity 0.2s;
+  }
+  .card {
+    width: ${NODE_W}px;
+    height: ${NODE_H}px;
     &:hover {
-      transform: translateY(-2px);
+      transform: translateX(4px);
       border-color: var(--kind);
+      .chevron {
+        transform: translateX(3px);
+      }
     }
-    &.open,
-    &.selected {
-      border-color: var(--kind);
-      animation: ${pop} 0.6s cubic-bezier(0.22, 1, 0.36, 1) both,
-        ${glow} 2.4s ease-in-out 0.6s infinite;
+  }
+  .ghost {
+    width: ${NODE_W}px;
+    height: ${NODE_H}px;
+    justify-content: center;
+    opacity: 0.5;
+    border-style: dashed;
+    &:hover {
+      opacity: 0.9;
+      transform: translateX(-4px);
+    }
+    .up {
+      font-size: 0.8rem;
+      color: rgba(232, 236, 248, 0.7);
+    }
+    .ghost-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+  }
+  .focus {
+    width: ${FOCUS_W}px;
+    height: ${FOCUS_H}px;
+    padding: 18px 20px;
+    cursor: default;
+    border-color: var(--kind);
+    animation: ${pop} 0.6s cubic-bezier(0.22, 1, 0.36, 1) both,
+      ${glow} 2.6s ease-in-out 0.6s infinite;
+    .arch-name {
+      font-size: 1.5rem;
+    }
+    .description {
+      margin: 2px 0 6px;
+      font-size: 0.9rem;
+      color: rgba(232, 236, 248, 0.8);
     }
   }
   .arch-kind {
@@ -231,6 +484,13 @@ const Shell = styled.section`
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--kind);
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--kind);
+      box-shadow: 0 0 8px var(--kind);
+    }
     .repo {
       margin-left: auto;
       padding: 2px 7px;
@@ -241,18 +501,18 @@ const Shell = styled.section`
       letter-spacing: 0;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--kind);
-      box-shadow: 0 0 8px var(--kind);
-    }
   }
   .arch-name {
     font-size: 1.15rem;
     font-weight: 700;
     color: #fff;
+  }
+  .deploy-hint {
+    font-size: 0.75rem;
+    color: rgba(232, 236, 248, 0.6);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .arch-meta {
     margin-top: auto;
@@ -270,90 +530,36 @@ const Shell = styled.section`
       background: var(--kind);
       color: #0b0f1d;
       font-weight: 700;
+      transition: transform 0.2s;
     }
   }
-
-  .header {
-    h2 {
-      margin: 0;
-      font-size: 1.5rem;
-      background: linear-gradient(90deg, #3ddc84, #4f9dff, #b388ff);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-    p {
-      margin: 4px 0 10px;
-      color: rgba(232, 236, 248, 0.65);
-      font-size: 0.9rem;
-    }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    button {
-      cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      background: rgba(255, 255, 255, 0.06);
-      color: #e8ecf8;
-      border-radius: 999px;
-      padding: 6px 14px;
-      font: inherit;
-      font-size: 0.85rem;
-      &:hover {
-        background: rgba(255, 255, 255, 0.14);
-      }
-      &.on {
-        border-color: rgba(232, 236, 248, 0.6);
-        background: rgba(232, 236, 248, 0.16);
-      }
-    }
-  }
-
-  .details {
-    width: 260px;
-    max-width: calc(100vw - 60px);
-    padding: 16px;
-    border-radius: 14px;
-    background: rgba(11, 15, 29, 0.75);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    .crumbs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      font-size: 0.75rem;
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    .row-label {
       color: rgba(232, 236, 248, 0.55);
-      margin-bottom: 8px;
+      min-width: 78px;
     }
-    h3 {
-      margin: 0 0 6px;
-      color: var(--kind);
-    }
-    p {
-      margin: 0 0 10px;
-      font-size: 0.9rem;
-      color: rgba(232, 236, 248, 0.8);
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      font-size: 0.82rem;
-      margin-bottom: 6px;
-      span {
-        color: rgba(232, 236, 248, 0.55);
-        min-width: 80px;
-      }
-      code {
-        color: #fff;
-      }
-    }
-    ul {
-      margin: 8px 0 0;
-      padding-left: 18px;
-      font-size: 0.85rem;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .chip {
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--kind);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--kind);
+    &:hover {
+      background: var(--kind);
+      color: #0b0f1d;
     }
   }
 
@@ -381,139 +587,119 @@ const Shell = styled.section`
 `;
 
 const Explorer = () => {
-  const [expanded, setExpanded] = useState(() => new Set());
-  const [selectedId, setSelectedId] = useState(null);
-  const [focusId, setFocusId] = useState(null);
+  const [mode, setMode] = useState("explore");
+  const [currentId, setCurrentId] = useState(ROOT.id);
+  const [showDeploy, setShowDeploy] = useState(true);
   const { fitView } = useReactFlow();
 
-  const [showDeploy, setShowDeploy] = useState(true);
-  const { nodes, edges } = useMemo(() => layout(expanded, showDeploy), [expanded, showDeploy]);
-  const flowNodes = useMemo(
-    () => nodes.map((n) => ({ ...n, selected: n.id === selectedId })),
-    [nodes, selectedId]
-  );
-
-  // Après chaque ouverture, la caméra zoome sur le nœud et ses enfants.
-  useEffect(() => {
-    const target = focusId && index[focusId];
-    const ids =
-      target && expanded.has(focusId)
-        ? [focusId, ...(target.node.children || []).map((c) => c.id)]
-        : null;
-    const timer = setTimeout(() => {
-      fitView({
-        nodes: ids ? ids.map((id) => ({ id })) : undefined,
-        duration: 800,
-        padding: 0.4,
-        maxZoom: 0.95,
-      });
-    }, 60);
-    return () => clearTimeout(timer);
-  }, [expanded, focusId, fitView]);
-
-  const onNodeClick = useCallback((_, flowNode) => {
-    const id = flowNode.id;
-    setSelectedId(id);
-    if (!index[id].node.children) return;
-    setFocusId(id);
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const go = useCallback((id) => {
+    setMode("explore");
+    setCurrentId(id);
   }, []);
 
-  const expandAll = () => {
-    setFocusId(null);
-    setExpanded(new Set(Object.keys(index).filter((id) => index[id].node.children)));
-  };
-  const reset = () => {
-    setFocusId(null);
-    setSelectedId(null);
-    setExpanded(new Set());
-  };
+  const { nodes, edges } = useMemo(
+    () => (mode === "explore" ? exploreLayout(currentId, go) : overviewLayout(showDeploy)),
+    [mode, currentId, go, showDeploy]
+  );
 
-  const selected = selectedId && index[selectedId].node;
+  // La caméra suit chaque changement de vue.
+  useEffect(() => {
+    const timer = setTimeout(() => fitView({ duration: 700, padding: 0.15, maxZoom: 1 }), 60);
+    return () => clearTimeout(timer);
+  }, [mode, currentId, fitView]);
+
+  // Échap remonte d'un niveau.
+  useEffect(() => {
+    const onKey = (e) => {
+      const parent = index[currentId].parent;
+      if (e.key === "Escape" && mode === "explore" && parent) setCurrentId(parent.id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [currentId, mode]);
+
+  const onNodeClick = useCallback(
+    (_, flowNode) => {
+      if (flowNode.type !== "focus") go(flowNode.id);
+    },
+    [go]
+  );
+
+  const path = pathTo(currentId);
+  const current = index[currentId].node;
 
   return (
-    <ReactFlow
-      nodes={flowNodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      onNodeClick={onNodeClick}
-      nodesDraggable={false}
-      nodesConnectable={false}
-      fitView
-      minZoom={0.2}
-    >
-      <Background variant="dots" gap={22} size={1.3} color="rgba(255,255,255,0.12)" />
-      <Panel position="top-left" className="header">
-        <h2>Explorateur d'architecture</h2>
-        <p>Clique sur un nœud pour révéler ses sous-composants.</p>
-        <div className="actions">
-          <button onClick={expandAll}>Tout déplier</button>
-          <button onClick={reset}>Réinitialiser</button>
-          <button
-            className={showDeploy ? "on" : ""}
-            aria-pressed={showDeploy}
-            onClick={() => setShowDeploy((v) => !v)}
-          >
-            Liens infra
-          </button>
+    <>
+      <div className="header">
+        <div>
+          <h2>Explorateur d'architecture</h2>
+          <p className="hint">
+            {mode === "explore"
+              ? "Clique sur un bloc à droite pour entrer dedans, sur celui de gauche pour remonter."
+              : "Clique sur n'importe quel bloc pour l'explorer."}
+          </p>
         </div>
-      </Panel>
-      {selected && (
-        <Panel position="top-right">
-          <div className="details" style={{ "--kind": KIND_COLORS[selected.kind] }}>
-            <div className="crumbs">
-              {pathTo(selected.id).map((n, i) => (
-                <span key={n.id}>
-                  {i > 0 && "› "}
-                  {n.name}
-                </span>
-              ))}
-            </div>
-            <h3>{selected.name}</h3>
-            <p>{selected.description}</p>
-            {selected.repo && (
-              <div className="row">
-                <span>Repo</span>
-                <code>{selected.repo}</code>
-              </div>
-            )}
-            {selected.deployedOn && (
-              <div className="row">
-                <span>Déployé sur</span>
-                {selected.deployedOn.map((id) => index[id].node.name).join(", ")}
-              </div>
-            )}
-            {hostedBy[selected.id] && (
-              <div className="row">
-                <span>Héberge</span>
-                {hostedBy[selected.id].map((n) => n.name).join(", ")}
-              </div>
-            )}
-            {selected.children && (
-              <ul>
-                {selected.children.map((c) => (
-                  <li key={c.id}>{c.name}</li>
-                ))}
-              </ul>
-            )}
+        <div className="actions">
+          <div className="segmented" role="group" aria-label="Mode d'affichage">
+            <button className={mode === "explore" ? "on" : ""} onClick={() => setMode("explore")}>
+              Exploration
+            </button>
+            <button className={mode === "overview" ? "on" : ""} onClick={() => setMode("overview")}>
+              Vue d'ensemble
+            </button>
           </div>
-        </Panel>
+          {mode === "overview" && (
+            <button
+              className={`toggle${showDeploy ? " on" : ""}`}
+              aria-pressed={showDeploy}
+              onClick={() => setShowDeploy((v) => !v)}
+            >
+              Liens infra
+            </button>
+          )}
+        </div>
+      </div>
+      {mode === "explore" && (
+        <nav className="crumbs" aria-label="Fil d'Ariane" style={kindVars(current)}>
+          {path.map((node, i) => (
+            <React.Fragment key={node.id}>
+              {i > 0 && <span className="sep">›</span>}
+              {i === path.length - 1 ? (
+                <span className="current">{node.name}</span>
+              ) : (
+                <button onClick={() => go(node.id)}>{node.name}</button>
+              )}
+            </React.Fragment>
+          ))}
+        </nav>
       )}
-      <Controls showInteractive={false} />
-      <MiniMap
-        pannable
-        zoomable
-        bgColor="rgba(11,15,29,0.85)"
-        maskColor="rgba(11,15,29,0.6)"
-        nodeColor={(n) => KIND_COLORS[n.data.node.kind]}
-        nodeBorderRadius={8}
-      />
-    </ReactFlow>
+      <div className="flow">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodeClick={onNodeClick}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          fitView
+          minZoom={0.2}
+        >
+          <Background variant="dots" gap={22} size={1.3} color="rgba(255,255,255,0.12)" />
+          <Controls showInteractive={false} />
+          {mode === "overview" && (
+            <MiniMap
+              pannable
+              zoomable
+              bgColor="rgba(11,15,29,0.85)"
+              maskColor="rgba(11,15,29,0.6)"
+              nodeColor={(n) => KIND_COLORS[n.data.node.kind]}
+              nodeBorderRadius={8}
+            />
+          )}
+        </ReactFlow>
+      </div>
+    </>
   );
 };
 

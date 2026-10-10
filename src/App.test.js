@@ -1,54 +1,75 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import App from './App';
 
-const nodeNamed = (name) =>
-  screen.getAllByText(name).find((el) => el.classList.contains('arch-name'));
-const queryNodeNamed = (name) =>
+// Bloc affiché dans le canevas (carte ou bloc central), hors fil d'Ariane.
+const block = (name) =>
   screen.queryAllByText(name).find((el) => el.classList.contains('arch-name'));
+const open = (name) => fireEvent.click(block(name));
+const focusName = () =>
+  document.querySelector('.focus .arch-name').textContent;
 
-test('drills down from product to its layers and components', () => {
+test('drills down from products to layers, one level at a time', () => {
   render(<App />);
-  expect(queryNodeNamed('Frontend')).toBeUndefined();
+  expect(focusName()).toBe('Mes produits');
+  expect(block('CyberPath')).toBeInTheDocument();
+  expect(block('Frontend')).toBeUndefined();
 
-  fireEvent.click(nodeNamed('CyberPath'));
-  expect(nodeNamed('Frontend')).toBeInTheDocument();
-  expect(nodeNamed('Backend')).toBeInTheDocument();
+  open('CyberPath');
+  expect(focusName()).toBe('CyberPath');
+  expect(block('Frontend')).toBeInTheDocument();
+  expect(block('Backend')).toBeInTheDocument();
+  expect(block('Infra')).toBeInTheDocument();
 
-  fireEvent.click(nodeNamed('Backend'));
-  expect(nodeNamed('Auth')).toBeInTheDocument();
+  open('Backend');
+  expect(focusName()).toBe('Backend');
+  expect(block('Auth')).toBeInTheDocument();
+  expect(block('Frontend')).toBeUndefined();
 
-  fireEvent.click(nodeNamed('CyberPath'));
-  expect(queryNodeNamed('Backend')).toBeUndefined();
+  const crumbs = screen.getByRole('navigation', { name: "Fil d'Ariane" });
+  fireEvent.click(within(crumbs).getByText('Mes produits'));
+  expect(block('Portfolio')).toBeInTheDocument();
 });
 
-test('static product only exposes a frontend', () => {
+test('the parent block on the left goes back up', () => {
   render(<App />);
-  fireEvent.click(nodeNamed('Portfolio'));
-  expect(nodeNamed('Frontend')).toBeInTheDocument();
-  expect(queryNodeNamed('Backend')).toBeUndefined();
+  open('CyberPath');
+  open('Backend');
+  fireEvent.click(screen.getByText('CyberPath', { selector: '.ghost-name' }));
+  expect(focusName()).toBe('CyberPath');
 });
 
-test('reset collapses everything', () => {
+test('static product has no backend', () => {
   render(<App />);
-  fireEvent.click(screen.getByText('Tout déplier'));
-  expect(nodeNamed('JWT')).toBeInTheDocument();
-  fireEvent.click(screen.getByText('Réinitialiser'));
-  expect(queryNodeNamed('JWT')).toBeUndefined();
+  open('Portfolio');
+  expect(block('Frontend')).toBeInTheDocument();
+  expect(block('Infra')).toBeInTheDocument();
+  expect(block('Backend')).toBeUndefined();
 });
 
-test('infra layer comes from its own repo and links to what it hosts', () => {
-  const { container } = render(<App />);
-  fireEvent.click(nodeNamed('CyberPath'));
-  expect(nodeNamed('Infra')).toBeInTheDocument();
-  expect(screen.getByText(/cyberpath-infra/)).toBeInTheDocument();
-
-  fireEvent.click(nodeNamed('Infra'));
-  fireEvent.click(nodeNamed('PostgreSQL (RDS)'));
+test('infra resources link to what they host', () => {
+  render(<App />);
+  open('CyberPath');
+  open('Infra');
+  open('Kubernetes (EKS)');
   expect(screen.getByText('Héberge')).toBeInTheDocument();
 
-  fireEvent.click(nodeNamed('Backend'));
+  fireEvent.click(screen.getByText('API', { selector: '.chip' }));
+  expect(focusName()).toBe('API');
+  expect(block('/courses')).toBeInTheDocument();
+  expect(screen.getByText('Kubernetes (EKS)', { selector: '.chip' })).toBeInTheDocument();
+});
+
+test('overview shows the whole tree and opens any block', () => {
+  const { container } = render(<App />);
+  fireEvent.click(screen.getByText("Vue d'ensemble"));
+  expect(block('JWT')).toBeInTheDocument();
   expect(container.querySelector('[data-id="deploy:cp-api->cp-k8s"]')).not.toBeNull();
+
   fireEvent.click(screen.getByText('Liens infra'));
   expect(container.querySelector('[data-id="deploy:cp-api->cp-k8s"]')).toBeNull();
+
+  open('JWT');
+  expect(focusName()).toBe('JWT');
+  expect(screen.getByText('Auth', { selector: '.ghost-name' })).toBeInTheDocument();
 });
