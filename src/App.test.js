@@ -9,6 +9,8 @@ const open = (name) => fireEvent.click(block(name));
 const focusName = () =>
   document.querySelector('.focus .arch-name').textContent;
 
+beforeEach(() => window.localStorage.clear());
+
 test('drills down from products to layers, one level at a time', () => {
   render(<App />);
   expect(focusName()).toBe('Mes produits');
@@ -72,4 +74,47 @@ test('overview shows the whole tree and opens any block', () => {
   open('JWT');
   expect(focusName()).toBe('JWT');
   expect(screen.getByText('Auth', { selector: '.ghost-name' })).toBeInTheDocument();
+});
+
+const upload = (content, name = 'architecture.json') =>
+  fireEvent.change(screen.getByTestId('architecture-file'), {
+    target: { files: [new File([content], name, { type: 'application/json' })] },
+  });
+
+const shop = JSON.stringify({
+  version: 1,
+  products: [{ id: 'shop', name: 'Shop', kind: 'app', children: [{ id: 'web', name: 'Web', kind: 'layer' }] }],
+});
+
+test('imports an architecture.json and goes back to the example', async () => {
+  render(<App />);
+  upload(shop, 'shop.json');
+  expect(await screen.findByText('shop.json')).toBeInTheDocument();
+  expect(block('Shop')).toBeInTheDocument();
+  expect(block('CyberPath')).toBeUndefined();
+
+  open('Shop');
+  expect(block('Web')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("Revenir à l'exemple"));
+  expect(block('CyberPath')).toBeInTheDocument();
+});
+
+test('keeps the imported file after a reload', async () => {
+  const { unmount } = render(<App />);
+  upload(shop, 'shop.json');
+  await screen.findByText('shop.json');
+  unmount();
+
+  render(<App />);
+  expect(block('Shop')).toBeInTheDocument();
+});
+
+test('shows why an invalid file was rejected', async () => {
+  render(<App />);
+  upload('{"version": 1, "products": [{"id": "x", "kind": "app"}]}', 'broken.json');
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('broken.json');
+  expect(alert).toHaveTextContent('"name" manquant');
+  expect(block('CyberPath')).toBeInTheDocument();
 });

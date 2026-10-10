@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styled, { keyframes } from "styled-components";
 import {
   ReactFlow,
@@ -11,7 +11,8 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import products from "./data";
+import sample from "./architecture.json";
+import { buildModel, parseArchitecture, ROOT_ID } from "./model";
 
 export const KIND_COLORS = {
   home: "#e8ecf8",
@@ -36,44 +37,48 @@ const KIND_LABELS = {
 const DEPLOY_COLOR = "#e8ecf8";
 
 const NODE_W = 230;
-const NODE_H = 108;
+const NODE_H = 120;
 const GAP_X = 120;
 const GAP_Y = 22;
 const FOCUS_W = 320;
 const FOCUS_H = 196;
 
-// Racine virtuelle : la première vue liste les produits.
-const ROOT = {
-  id: "__root",
-  name: "Mes produits",
-  kind: "home",
-  description: "Choisis un produit pour explorer son architecture.",
-  children: products,
-};
+const SAMPLE_MODEL = buildModel(sample);
 
-// Index id -> { node, parent } pour retrouver le chemin d'un nœud.
-const index = {};
-const indexTree = (node, parent) => {
-  index[node.id] = { node, parent };
-  (node.children || []).forEach((child) => indexTree(child, node));
-};
-indexTree(ROOT, null);
+// Le dernier fichier importé est gardé dans le navigateur, pour le retrouver au rechargement.
+const STORAGE_KEY = "architecture-explorer:file";
 
-// Inverse de `deployedOn` : ressource infra -> nœuds applicatifs qu'elle héberge.
-const hostedBy = {};
-Object.values(index).forEach(({ node }) =>
-  (node.deployedOn || []).forEach((target) => {
-    (hostedBy[target] = hostedBy[target] || []).push(node);
-  })
-);
-
-const pathTo = (id) => {
-  const path = [];
-  for (let cur = index[id]; cur; cur = cur.parent && index[cur.parent.id]) {
-    path.unshift(cur.node);
+const loadSaved = () => {
+  try {
+    const text = localStorage.getItem(STORAGE_KEY);
+    const { model } = text ? parseArchitecture(text) : {};
+    return model ? { model, source: localStorage.getItem(`${STORAGE_KEY}:name`) || "fichier importé" } : null;
+  } catch (e) {
+    return null;
   }
-  return path;
 };
+
+const save = (text, name) => {
+  try {
+    if (text === null) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(`${STORAGE_KEY}:name`);
+    } else {
+      localStorage.setItem(STORAGE_KEY, text);
+      localStorage.setItem(`${STORAGE_KEY}:name`, name);
+    }
+  } catch (e) {
+    // Stockage indisponible (navigation privée…) : le fichier reste chargé pour cette session.
+  }
+};
+
+const readFile = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
 
@@ -91,9 +96,9 @@ const treeEdge = (source, target) => {
 
 // Exploration : le parent à gauche, le nœud courant au centre, ses enfants à droite.
 // Les ids restent ceux des nœuds réels : un enfant cliqué glisse jusqu'au centre.
-const exploreLayout = (currentId, onGo) => {
-  const current = index[currentId].node;
-  const parent = index[currentId].parent;
+const exploreLayout = (model, currentId, onGo) => {
+  const current = model.index[currentId].node;
+  const parent = model.index[currentId].parent;
   const children = current.children || [];
   const nodes = [];
   const edges = [];
@@ -105,7 +110,7 @@ const exploreLayout = (currentId, onGo) => {
       position: { x: -(NODE_W + GAP_X), y: -NODE_H / 2 },
       width: NODE_W,
       height: NODE_H,
-      data: { node: parent },
+      data: { node: parent, model },
     });
     edges.push({ ...treeEdge(parent, current), animated: false, style: { stroke: "rgba(232,236,248,0.25)", strokeWidth: 1.5 } });
   }
@@ -116,7 +121,7 @@ const exploreLayout = (currentId, onGo) => {
     position: { x: 0, y: -FOCUS_H / 2 },
     width: FOCUS_W,
     height: FOCUS_H,
-    data: { node: current, onGo },
+    data: { node: current, model, onGo },
   });
 
   children.forEach((child, i) => {
@@ -129,7 +134,7 @@ const exploreLayout = (currentId, onGo) => {
       },
       width: NODE_W,
       height: NODE_H,
-      data: { node: child },
+      data: { node: child, model },
     });
     edges.push(treeEdge(current, child));
   });
@@ -138,7 +143,7 @@ const exploreLayout = (currentId, onGo) => {
 };
 
 // Vue d'ensemble : tout l'arbre déplié, de gauche à droite.
-const overviewLayout = (showDeploy) => {
+const overviewLayout = (model, showDeploy) => {
   const nodes = [];
   const edges = [];
   let row = 0;
@@ -159,12 +164,12 @@ const overviewLayout = (showDeploy) => {
       position: { x: depth * (NODE_W + GAP_X), y },
       width: NODE_W,
       height: NODE_H,
-      data: { node },
+      data: { node, model },
     });
     if (parent) edges.push(treeEdge(parent, node));
     return y;
   };
-  products.forEach((p) => place(p, 0, null));
+  model.products.forEach((p) => place(p, 0, null));
 
   if (showDeploy) {
     nodes.forEach(({ data: { node } }) =>
@@ -224,7 +229,7 @@ const KindRow = ({ node }) => (
   </div>
 );
 
-const CardNode = ({ data: { node } }) => {
+const CardNode = ({ data: { node, model } }) => {
   const count = node.children ? node.children.length : 0;
   return (
     <div className="arch-node card" style={kindVars(node)}>
@@ -232,7 +237,7 @@ const CardNode = ({ data: { node } }) => {
       <KindRow node={node} />
       <div className="arch-name">{node.name}</div>
       {node.deployedOn && (
-        <div className="deploy-hint">☁ {node.deployedOn.map((id) => index[id].node.name).join(", ")}</div>
+        <div className="deploy-hint">☁ {node.deployedOn.map((id) => model.index[id].node.name).join(", ")}</div>
       )}
       <div className="arch-meta">
         <span>{count > 0 ? plural(count, "sous-composant") : "Voir le détail"}</span>
@@ -250,12 +255,12 @@ const GhostNode = ({ data: { node } }) => (
   </div>
 );
 
-const Chips = ({ label, ids, onGo }) => (
+const Chips = ({ label, ids, model, onGo }) => (
   <div className="row">
     <span className="row-label">{label}</span>
     <div className="chips">
       {ids.map((id) => {
-        const target = index[id].node;
+        const target = model.index[id].node;
         return (
           <button
             key={id}
@@ -274,17 +279,17 @@ const Chips = ({ label, ids, onGo }) => (
   </div>
 );
 
-const FocusNode = ({ data: { node, onGo } }) => {
+const FocusNode = ({ data: { node, model, onGo } }) => {
   const count = node.children ? node.children.length : 0;
-  const hosts = hostedBy[node.id];
+  const hosts = model.hostedBy[node.id];
   return (
     <div className="arch-node focus" style={kindVars(node)}>
       <Handles />
       <KindRow node={node} />
       <div className="arch-name">{node.name}</div>
       <p className="description">{node.description}</p>
-      {node.deployedOn && <Chips label="Déployé sur" ids={node.deployedOn} onGo={onGo} />}
-      {hosts && <Chips label="Héberge" ids={hosts.map((n) => n.id)} onGo={onGo} />}
+      {node.deployedOn && <Chips label="Déployé sur" ids={node.deployedOn} model={model} onGo={onGo} />}
+      {hosts && <Chips label="Héberge" ids={hosts.map((n) => n.id)} model={model} onGo={onGo} />}
       <div className="arch-meta">
         {count > 0 ? `${plural(count, "sous-composant")} →` : "Aucun sous-composant"}
       </div>
@@ -403,8 +408,67 @@ const Shell = styled.section`
     }
   }
   .flow {
+    position: relative;
     flex: 1;
     min-height: 0;
+  }
+  .drop-hint {
+    position: absolute;
+    inset: 12px;
+    z-index: 10;
+    display: grid;
+    place-items: center;
+    border: 2px dashed rgba(232, 236, 248, 0.6);
+    border-radius: 16px;
+    background: rgba(11, 15, 29, 0.7);
+    font-size: 1.2rem;
+    pointer-events: none;
+  }
+  .source {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 0 20px 8px;
+    font-size: 0.8rem;
+    color: rgba(232, 236, 248, 0.55);
+    code {
+      color: #e8ecf8;
+    }
+    button {
+      cursor: pointer;
+      background: none;
+      border: 0;
+      padding: 0;
+      font: inherit;
+      color: #4f9dff;
+      text-decoration: underline;
+    }
+  }
+  .errors {
+    margin: 0 20px 10px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 92, 138, 0.6);
+    background: rgba(255, 92, 138, 0.12);
+    font-size: 0.85rem;
+    .errors-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      button {
+        cursor: pointer;
+        background: none;
+        border: 0;
+        color: inherit;
+        font-size: 1.2rem;
+        line-height: 1;
+      }
+    }
+    ul {
+      margin: 6px 0 0;
+      padding-left: 18px;
+    }
   }
 
   .react-flow__node {
@@ -588,9 +652,47 @@ const Shell = styled.section`
 
 const Explorer = () => {
   const [mode, setMode] = useState("explore");
-  const [currentId, setCurrentId] = useState(ROOT.id);
+  const [currentId, setCurrentId] = useState(ROOT_ID);
   const [showDeploy, setShowDeploy] = useState(true);
+  const [{ model, source }, setLoaded] = useState(() => loadSaved() || { model: SAMPLE_MODEL, source: null });
+  const [errors, setErrors] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef(null);
   const { fitView } = useReactFlow();
+
+  const show = (loaded) => {
+    setLoaded(loaded);
+    setErrors(null);
+    setMode("explore");
+    setCurrentId(ROOT_ID);
+  };
+
+  const importFile = (file) => {
+    if (!file) return;
+    readFile(file).then(
+      (text) => {
+        const result = parseArchitecture(text);
+        if (result.errors) {
+          setErrors({ name: file.name, list: result.errors });
+          return;
+        }
+        save(text, file.name);
+        show({ model: result.model, source: file.name });
+      },
+      () => setErrors({ name: file.name, list: ["Impossible de lire ce fichier."] })
+    );
+  };
+
+  const backToSample = () => {
+    save(null);
+    show({ model: SAMPLE_MODEL, source: null });
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    importFile(e.dataTransfer.files[0]);
+  };
 
   const go = useCallback((id) => {
     setMode("explore");
@@ -598,25 +700,25 @@ const Explorer = () => {
   }, []);
 
   const { nodes, edges } = useMemo(
-    () => (mode === "explore" ? exploreLayout(currentId, go) : overviewLayout(showDeploy)),
-    [mode, currentId, go, showDeploy]
+    () => (mode === "explore" ? exploreLayout(model, currentId, go) : overviewLayout(model, showDeploy)),
+    [model, mode, currentId, go, showDeploy]
   );
 
   // La caméra suit chaque changement de vue.
   useEffect(() => {
     const timer = setTimeout(() => fitView({ duration: 700, padding: 0.15, maxZoom: 1 }), 60);
     return () => clearTimeout(timer);
-  }, [mode, currentId, fitView]);
+  }, [model, mode, currentId, fitView]);
 
   // Échap remonte d'un niveau.
   useEffect(() => {
     const onKey = (e) => {
-      const parent = index[currentId].parent;
+      const parent = model.index[currentId].parent;
       if (e.key === "Escape" && mode === "explore" && parent) setCurrentId(parent.id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentId, mode]);
+  }, [model, currentId, mode]);
 
   const onNodeClick = useCallback(
     (_, flowNode) => {
@@ -625,8 +727,8 @@ const Explorer = () => {
     [go]
   );
 
-  const path = pathTo(currentId);
-  const current = index[currentId].node;
+  const path = model.pathTo(currentId);
+  const current = model.index[currentId].node;
 
   return (
     <>
@@ -657,8 +759,49 @@ const Explorer = () => {
               Liens infra
             </button>
           )}
+          <button onClick={() => fileInput.current.click()}>Importer un JSON</button>
+          <input
+            ref={fileInput}
+            data-testid="architecture-file"
+            type="file"
+            accept=".json,application/json"
+            hidden
+            onChange={(e) => {
+              importFile(e.target.files[0]);
+              e.target.value = "";
+            }}
+          />
         </div>
       </div>
+      <div className="source">
+        {source ? (
+          <>
+            <span>
+              Fichier affiché : <code>{source}</code>
+            </span>
+            <button onClick={backToSample}>Revenir à l'exemple</button>
+          </>
+        ) : (
+          <span>
+            Exemple affiché. Importe ton <code>architecture.json</code> ou dépose-le sur le canevas.
+          </span>
+        )}
+      </div>
+      {errors && (
+        <div className="errors" role="alert">
+          <div className="errors-title">
+            <strong>{errors.name} n'a pas pu être chargé :</strong>
+            <button onClick={() => setErrors(null)} aria-label="Fermer">
+              ×
+            </button>
+          </div>
+          <ul>
+            {errors.list.map((msg) => (
+              <li key={msg}>{msg}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {mode === "explore" && (
         <nav className="crumbs" aria-label="Fil d'Ariane" style={kindVars(current)}>
           {path.map((node, i) => (
@@ -673,7 +816,16 @@ const Explorer = () => {
           ))}
         </nav>
       )}
-      <div className="flow">
+      <div
+        className="flow"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+      >
+        {dragging && <div className="drop-hint">Dépose ton architecture.json</div>}
         <ReactFlow
           nodes={nodes}
           edges={edges}

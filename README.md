@@ -1,3 +1,49 @@
+# Explorateur d'architecture
+
+Affiche l'architecture de tes produits niveau par niveau : produit → couches (frontend, backend, infra) → composants → modules.
+Les données viennent d'un fichier `architecture.json`. L'exemple livré est dans `src/architecture/architecture.json` ;
+dans l'app, **Importer un JSON** (ou un glisser-déposer sur le canevas) affiche ton propre fichier.
+
+## Format `architecture.json`
+
+```json
+{
+  "version": 1,
+  "products": [
+    {
+      "id": "shop",
+      "name": "Shop",
+      "kind": "app",
+      "archType": "fullstack",
+      "description": "Boutique en ligne.",
+      "children": [
+        { "id": "shop-web", "name": "Frontend", "kind": "layer", "repo": "shop-web", "deployedOn": ["shop-cdn"] },
+        {
+          "id": "shop-infra", "name": "Infra", "kind": "infra", "repo": "shop-infra",
+          "children": [{ "id": "shop-cdn", "name": "CDN", "kind": "resource" }]
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Champ | Obligatoire | Rôle |
+|---|---|---|
+| `id` | oui | Identifiant unique dans tout le fichier |
+| `name` | oui | Nom affiché |
+| `kind` | oui | `app`, `layer`, `infra`, `component`, `resource` ou `module` |
+| `description` | non | Une phrase affichée dans le bloc central |
+| `archType` | non | Type d'architecture d'un produit (`fullstack`, `static`…) |
+| `repo` | non | Repo qui contient ce bloc |
+| `deployedOn` | non | Ids des ressources infra qui hébergent ce bloc |
+| `children` | non | Sous-blocs |
+
+Un fichier invalide est refusé avec la liste des erreurs (id manquant ou en double, `kind` inconnu, `deployedOn` vers un id qui n'existe pas…).
+La validation est dans `src/architecture/model.js`.
+
+---
+
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
 ## Available Scripts
